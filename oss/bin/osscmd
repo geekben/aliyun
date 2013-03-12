@@ -1,0 +1,918 @@
+#!/usr/bin/env python26
+#coding=utf-8
+from oss.oss_api import *
+from oss.oss_util import *
+from oss.oss_xml_handler import *
+import optparse
+import sys
+import string
+import ConfigParser
+import os, sys, re, time
+from optparse import OptionParser
+
+help = \
+'''osscmd:
+    getallbucket(gs)
+    createbucket(cb,mb,pb) bucket --acl=[acl]
+    deletebucket(db) bucket
+    deletewholebucket bucket
+
+    getacl bucket
+    setacl bucket --acl=[acl] 
+        allow private, public-read, public-read-write
+
+    ls(list) oss://bucket/[prefix] [marker] [delimiter] [maxkeys]
+    listallobject oss://bucket/[prefix]
+    deleteallobject oss://bucket/[prefix]
+    downloadallobject oss://bucket/[prefix] localdir
+    put localfile oss://bucket/object --content-type=[content_type] --headers=\"key1:value1, key2:value2\" 
+    upload localfile oss://bucket/object --content-type=[content_type]
+    get oss://bucket/object localfile
+    multiget(multi_get) oss://bucket/object localfile
+    cat oss://bucket/object
+    meta oss://bucket/object
+    copy oss://source_bucket/source_object oss://target_bucket/target_object --headers=\"key1:value1, key2:value2\"
+    rm(delete,del) oss://bucket/object
+    signurl(sign) oss://bucket/object --timeout=[timeout_seconds]
+
+    init oss://bucket/object
+    uploadpartfromstring(upfs) oss://bucket/object --upload_id=xxx --part_number=xxx --data=xxx
+    listpart oss://bucket/object --upload_id=xxx
+    listparts oss://bucket
+    multiupload(multi_upload,mp) localfile oss://bucket/object 
+    multiupload(multi_upload,mp) localfile oss://bucket/object --upload_id=xxx --thread_num=10 --max_part_num=1000
+    config --id=[accessid] --key=[accesskey]
+options:
+    --help, print help message'''
+
+cmdlists = {}
+AclList = ['private', 'public-read', 'public-read-write']
+OSSPrefix = 'oss://'
+CONFIGFILE = os.path.expanduser('~') + '/.osscredentials'
+CONFIGSECTION = 'OSSCredentials'
+host = 'oss.aliyuncs.com'
+accessID = ""
+accessKEY = ""
+
+def formatDateTime(osstimestamp):
+    date = re.compile("(\.\d*)?Z").sub(".000Z", osstimestamp)
+    ts = time.strptime(date, "%Y-%m-%dT%H:%M:%S.000Z")
+    return time.strftime("%Y-%m-%d %H:%M", ts)
+
+def formatSize(size):
+    size = int(size)
+    coeffs = ['K', 'M', 'G', 'T']
+    coeff = ""
+    while size > 2048:
+        size /= 1024
+        coeff = coeffs.pop(0)
+    return str(size) + coeff + "B"
+
+def split_path(path):
+    if not path.lower().startswith(OSSPrefix):
+        print "%s parameter %s invalid, " \
+              "must be start with %s" % \
+              (args[0], args[1], OSSPrefix)
+        sys.exit(1)
+    pather = path[len(OSSPrefix):].split('/')
+    return pather
+
+
+def print_result(cmd, res):
+    try:
+        if res.status / 100 == 2:
+            #print cmd, "OK"
+            pass
+        else:
+            print "Error Headers:\n", res.getheaders()
+            print "Error Body:\n", res.read()
+            print "Error Status:\n", res.status
+            print cmd, "Failed!"
+    except AttributeError:
+        pass
+
+'split an object path'
+def split_object_path(command, path):
+    pather = split_path(path)
+    if len(pather) <= 1:
+        print "%s parameters invalid, must be a object format" % command
+        sys.exit(1)
+    return pather
+
+def cmd_listing(args, options):
+    if len(args) == 1:
+        return cmd_getallbucket(args, options)
+    path = args[1]
+    pather = split_path(path)
+    if len(pather) == 0:
+        return cmd_getallbucket(args, options)
+    bucket= pather[0]
+    prefix = ''
+    if len(pather) > 1:
+        prefix += '/'.join(pather[1:])
+
+    marker = ''
+    delimiter = ''
+    maxkeys = 1000
+
+    if len(args) == 3: 
+        marker = args[2]
+    elif len(args) == 4:
+        marker = args[2]
+        delimiter = args[3]
+    elif len(args) >= 5:
+        marker = args[2]
+        delimiter = args[3]
+        maxkeys = args[4]
+
+    #print bucket, prefix, marker, delimiter, maxkeys
+    prefix=smart_code(prefix)
+    marker=smart_code(marker)
+    delimiter = smart_code(delimiter)
+    maxkeys=smart_code(maxkeys)
+    res = get_oss().get_bucket(bucket, prefix, marker, delimiter, maxkeys)
+    if (res.status / 100) == 2:
+        body = res.read()
+        hh = GetBucketXml(body)
+        (fl, pl) = hh.list()
+        print "prefix list is: "
+        for i in pl:
+            print i
+        print "object list is: "
+        for i in fl:
+            if len(i) == 7:
+                try:
+                    print "%16s %6s %s/%s " % (formatDateTime(i[1]), formatSize(string.atoi(i[3])), OSSPrefix + bucket, i[0])
+                except:
+                    print "Exception when print :", i
+        print "\nprefix list number is: %s " % len(pl)
+        print "object list number is: %s " % len(fl)
+    return res
+
+def cmd_listparts(args, options):
+    if len(args) == 1:
+        return cmd_getallbucket(args, options)
+    path = args[1]
+    pather = split_path(path)
+    if len(pather) == 0:
+        return cmd_getallbucket(args, options)
+    bucket= pather[0]
+    for i in get_all_upload_id_list(get_oss(), bucket):
+        print "%s %s" % (i[0], i[1])
+
+def cmd_init_upload(args, options):
+    if len(args) == 1:
+        return "" 
+    path = args[1]
+    pather = split_path(path)
+    if len(pather) == 0:
+        return "" 
+    bucket= pather[0]
+    object = '/'.join(pather[1:])
+    upload_id = get_upload_id(get_oss(), bucket, object)
+    print upload_id
+
+def cmd_listpart(args, options):
+    if len(args) == 1:
+        return cmd_getallbucket(args, options)
+    path = args[1]
+    pather = split_path(path)
+   
+    if len(pather) == 0:
+        return cmd_getallbucket(args, options)
+    bucket= pather[0]
+    object = '/'.join(pather[1:])
+    if options.upload_id is None:
+        print "upload_id invalid, please set with --upload_id=xxx"
+        sys.exit(1)
+
+    for i in get_part_list(get_oss(), bucket, object, options.upload_id):
+        print i
+
+def cmd_upload_par_from_string(args, options):
+    if len(args) == 1:
+        return cmd_getallbucket(args, options)
+    path = args[1]
+    pather = split_path(path)
+   
+    if len(pather) == 0:
+        return cmd_getallbucket(args, options)
+    bucket= pather[0]
+    object = '/'.join(pather[1:])
+    if options.upload_id is None:
+        print "upload_id invalid, please set with --upload_id=xxx"
+        sys.exit(1)
+    if options.part_number is None:
+        print "part_number invalid, please set with --part_number=xxx"
+        sys.exit(1)
+    if options.data is None:
+        print "data invalid, please set with --data=xxx"
+        sys.exit(1)
+
+    res = get_oss().upload_part_from_string(bucket, object, options.data, options.upload_id, options.part_number)
+    return res
+
+def cmd_listallobject(args, options):
+    if len(args) == 1:
+        return cmd_getallbucket(args, options)
+    path = args[1]
+    pather = split_path(path)
+    if len(pather) == 0:
+        return cmd_getallbucket(args, options)
+    bucket = pather[0]
+    prefix = ""
+    if len(pather) > 1:
+        prefix += '/'.join(pather[1:])
+
+    marker = ""
+    total_object_num = 0
+    totalsize = 0
+    totaltimes = 0
+    delimiter = ''
+    maxkeys = '1000'
+    while True:
+        res = get_oss().get_bucket(bucket, prefix, marker, delimiter, maxkeys)
+        if res.status != 200:
+            return res
+            
+        body = res.read()
+        hh = GetBucketXml(body)
+        (fl, pl) = hh.list()
+        if len(fl) != 0:
+            for i in fl:
+                if isinstance(i[0], unicode):
+                    object = i[0].encode('utf-8')
+                else:
+                    object = i[0]
+                total_object_num += 1
+                try:
+                    print "%16s %6s %s/%s " % (formatDateTime(i[1]), formatSize(string.atoi(i[3])), OSSPrefix + bucket, object)
+                except:
+                    print "Exception when print :", i
+                totalsize += string.atoi(i[3])
+        if hh.is_truncated:
+            marker = hh.nextmarker
+            totaltimes += 1
+        else:
+            break
+        if len(marker) == 0:
+            break
+    print "object list number is: %s " % total_object_num
+    print "totalsize is: real:%s, format:%s " % (totalsize, formatSize(totalsize))
+    print "request times is: %s" % totaltimes
+    return res
+
+def cmd_downloadallobject(args, options):
+    if len(args) < 3:
+        print "%s miss parameters" % args[0]
+        return
+    path = args[1]
+    pather = split_path(path)
+    if len(pather) == 0 or len(pather[0]) == 0:
+        print "please input oss://bucket"
+        return
+    local_path = args[2]
+
+    bucket = pather[0]
+    prefix = ""
+    if len(pather) > 1:
+        prefix += '/'.join(pather[1:])
+
+    marker = ""
+    total_object_num = 0
+    totaltimes = 0
+    delimiter = ''
+    maxkeys = '1000'
+    ok_times = 0
+    fail_times = 0
+    handled_obj_num = 0
+    while True:
+        res = get_oss().get_bucket(bucket, prefix, marker, delimiter, maxkeys)
+        if res.status != 200:
+            return res
+        body = res.read()
+        hh = GetBucketXml(body)
+        (fl, pl) = hh.list()
+        if len(fl) != 0:
+            for i in fl:
+                if isinstance(i[0], unicode):
+                    object = i[0].encode('utf-8')
+                else:
+                    object = i[0]
+                total_object_num += 1
+                try:
+                    object = smart_code(object)
+                    localfile = os.path.join(local_path, object) 
+                    localfile = smart_code(localfile)
+                    try:
+                        dirname = os.path.dirname(localfile)
+                        if not os.path.isdir(dirname):
+                            os.makedirs(dirname)
+                    except:
+                        pass
+                    handled_obj_num += 1
+                    if os.path.isfile(localfile):
+                        ok_times += 1 
+                    else:
+                        res = get_oss().get_object_to_file(bucket, object, localfile)
+                        if res.status == 200:
+                            ok_times += 1
+                        else:
+                            fail_times += 1
+                            print "download object %s to %s Failed." % (object, localfile)
+                except Exception, e:
+                    print e, "download object %s to %s Failed." % (object, localfile)
+                    fail_times += 1
+        if hh.is_truncated:
+            marker = hh.nextmarker
+            totaltimes += 1
+        else:
+            break
+        if len(marker) == 0:
+            break
+    print "there are %s objects, they are downloaded into %s" % (handled_obj_num, local_path)
+    print "download ok: %s, fail: %s" % (ok_times, fail_times)
+
+def cmd_deleteallobject(args, options):
+    if len(args) == 1:
+        return cmd_getallbucket(args, options)
+    path = args[1]
+    pather = split_path(path)
+    if len(pather) == 0:
+        return cmd_getallbucket(args, options)
+    bucket = pather[0]
+    prefix = ""
+    if len(pather) > 1:
+        prefix += '/'.join(pather[1:])
+    marker = ""
+    delete_result = True
+    total_object_list=[]
+    delimiter = ''
+    maxkeys = '1000'
+    while True:
+        object_list = []
+        res = get_oss().get_bucket(bucket, prefix, marker, delimiter, maxkeys)
+        if res.status != 200:
+            break 
+        body = res.read()
+        hh = GetBucketXml(body)
+        (fl, pl) = hh.list()
+        if len(fl) != 0:
+            for i in fl:
+                if isinstance(i[0], unicode):
+                    object = i[0].encode('utf-8')
+                else:
+                    object = i[0]
+                object_list.append(object)
+        total_object_list.append(object_list)
+        if hh.is_truncated:
+            marker = hh.nextmarker
+        else:
+            break
+        if len(marker) == 0:
+            break
+    for object_list in total_object_list:
+        if len(object_list) == 0:
+            continue 
+        delete_result = get_oss().batch_delete_objects(bucket, object_list)
+        if not delete_result:
+            print "batch delete objects failed. first is", object_list[0] 
+            break
+
+    return delete_result
+
+def cmd_getallbucket(args, options):
+    res = get_oss().get_service()
+    if (res.status / 100) == 2:
+        body = res.read()
+        h = GetServiceXml(body)
+        for i in h.list():
+            if len(i) == 2:
+                print "%16s %s " % (formatDateTime(i[1]), i[0])
+
+        print "\nBucket Number is: ", len(h.list())
+
+    return res
+
+def cmd_createbucket(args, options):
+    if len(args) < 2:
+        print "%s miss parameter" % args[0]
+        sys.exit(1)
+    elif options.acl is not None and options.acl not in AclList:
+        print "acl invalid, SHOULD be one of %s" % (AclList)
+        sys.exit(1)
+    acl = ''
+    if options.acl:
+        acl = options.acl
+
+    return get_oss().put_bucket(args[1], acl)
+
+def cmd_deletebucket(args, options):
+    if len(args) < 2: 
+        print "%s miss parameter " % args[0]
+        sys.exit(1)
+    return get_oss().delete_bucket(args[1])
+
+def cmd_deletewholebucket(args, options):
+    if len(args) < 2: 
+        print "%s miss parameter " % args[0]
+        sys.exit(1)
+    return clear_all_objects_in_bucket(get_oss(), args[1])
+
+def cmd_deletebyfile(args, options):
+    if len(args) < 3: 
+        print "%s miss parameter " % args[0]
+        sys.exit(1)
+    filename = args[1]
+    bucket = args[2]
+    thread_num = 5
+    f = open(filename)
+    part_msg_list = f.readlines()
+    f.close()
+    step = len(part_msg_list) / thread_num
+    retry_times = 5
+    while(retry_times >= 0):
+        try:
+            threadpool = []
+            for i in range(0, thread_num):
+                if i == thread_num - 1:
+                    end = len(part_msg_list)
+                else:
+                    end = i * step + step
+                end = i * step + step
+                begin = i * step
+                current = DeleteObjectWorker(get_oss(), bucket, part_msg_list[begin:end])
+                threadpool.append(current)
+                current.start()
+            for item in threadpool:
+                item.join()
+            print "delete ok"
+            break
+        except:
+            retry_times = retry_times -1
+
+def cmd_setacl(args, options):
+    if len(args) < 2:
+        print "%s miss parameter" % args[0]
+        sys.exit(1)
+    elif options.acl is None or options.acl not in AclList:
+        print "acl invalid, SHOULD be one of %s" % (AclList)
+        sys.exit(1)
+    return get_oss().put_bucket(args[1], options.acl)
+
+def cmd_getacl(args, options):
+    if len(args) < 2: 
+        print "%s miss parameter " % args[0]
+        sys.exit(1)
+    res = get_oss().get_bucket_acl(args[1])
+    if (res.status / 100) == 2:
+        body = res.read()
+        h = GetBucketAclXml(body)
+        print h.grant
+    return res
+
+def to_http_headers(string):
+    map = {}
+    for i in string.split(','):
+        key_value_list = i.strip().split(':')
+        if len(key_value_list) == 2:
+           map[key_value_list[0]] = key_value_list[1] 
+    return map
+        
+def cmd_put(args, options):
+    if len(args) < 3:
+        print "%s miss parameters" % args[0]
+        return
+    localfile = args[1]
+    if not os.path.isfile(localfile):
+        print "%s : localfile: %s NOT exist, please check" % (args[0], args[1])
+        sys.exit(1)
+    pather = split_path(args[2])
+    object = ''
+    if len(pather) == 1 or (len(pather) == 2 and pather[1] == ''): # e.g. upload to oss://bucket/
+        object = os.path.basename(localfile)
+    elif pather[len(pather) -1] == '': #e.g. uplod to oss://bucket/a/b/
+        object = '/'.join(pather[1:]) + os.path.basename(localfile)
+    else: #user specified objectname oss://bucket/[path]/object
+        object = '/'.join(pather[1:])
+    object = smart_code(object)
+    bucket = pather[0]
+    content_type = ""
+    headers = {}
+    if options.content_type:
+        content_type = options.content_type
+    if options.headers:
+        headers = to_http_headers(options.headers)
+
+    res = get_oss().put_object_from_file(bucket, object, localfile, content_type, headers)
+
+    if res.status == 200:
+        print "Object URL is: http://%s/%s/%s" % (host, bucket, object)
+        print "Object abstract path is: oss://%s/%s" % (bucket, object)
+        header_map = convert_header2map(res.getheaders())
+        print "ETag is %s " % safe_get_element("etag", header_map) 
+
+    return res
+
+def cmd_upload(args, options):
+    if len(args) < 3:
+        print "%s miss parameters" % args[0]
+        return
+    localfile = args[1]
+    if not os.path.isfile(localfile):
+        print "%s : localfile: %s NOT exist, please check" % (args[0], args[1])
+        sys.exit(1)
+    pather = split_path(args[2])
+    object = ''
+    if len(pather) == 1 or (len(pather) == 2 and pather[1] == ''): # e.g. upload to oss://bucket/
+        object = os.path.basename(localfile)
+    elif pather[len(pather) -1] == '': #e.g. uplod to oss://bucket/a/b/
+        object = '/'.join(pather[1:]) + os.path.basename(localfile)
+    else: #user specified objectname oss://bucket/[path]/object
+        object = '/'.join(pather[1:])
+    object = smart_code(object)
+    bucket = pather[0]
+    content_type = ""
+    headers = {}
+    if options.content_type:
+        content_type = options.content_type
+    if options.headers:
+        headers = to_http_headers(options.headers)
+
+    thread_num = 10
+    if options.thread_num:
+        thread_num = options.thread_num
+    max_part_num = 1000
+    if options.max_part_num:
+        max_part_num = options.max_part_num
+    res = get_oss().upload_large_file(bucket, object, localfile, thread_num, max_part_num, headers)
+
+    if res.status == 200:
+        print "Object URL is: http://%s/%s/%s" % (host, bucket, object)
+        print "Object abstract path is: oss://%s/%s" % (bucket, object)
+        header_map = convert_header2map(res.getheaders())
+        print "ETag is %s " % safe_get_element("etag", header_map) 
+
+    return res
+
+def cmd_multi_upload(args, options):
+    if len(args) < 3:
+        print "%s miss parameters" % args[0]
+        return
+    localfile = args[1]
+    if not os.path.isfile(localfile):
+        print "%s : localfile: %s NOT exist, please check" % (args[0], args[1])
+        sys.exit(1)
+    pather = split_path(args[2])
+    object = ''
+    if len(pather) == 1 or (len(pather) == 2 and pather[1] == ''): # e.g. upload to oss://bucket/
+        object = os.path.basename(localfile)
+    elif pather[len(pather) -1] == '': #e.g. uplod to oss://bucket/a/b/
+        object = '/'.join(pather[1:]) + os.path.basename(localfile)
+    else: #user specified objectname oss://bucket/[path]/object
+        object = '/'.join(pather[1:])
+    object = smart_code(object)
+    bucket = pather[0]
+    content_type = ""
+    headers = {}
+    if options.content_type:
+        content_type = options.content_type
+    if options.headers:
+        headers = to_http_headers(options.headers)
+
+    thread_num = 10
+    if options.thread_num:
+        thread_num = options.thread_num
+    max_part_num = 1000
+    if options.max_part_num:
+        max_part_num = options.max_part_num
+    upload_id = ""
+    if options.upload_id:
+        upload_id = options.upload_id
+    res = get_oss().multi_upload_file(bucket, object, localfile, upload_id)
+
+    if res.status == 200:
+        print "Object URL is: http://%s/%s/%s" % (host, bucket, object)
+        print "Object abstract path is: oss://%s/%s" % (bucket, object)
+        header_map = convert_header2map(res.getheaders())
+        print "ETag is %s " % safe_get_element("etag", header_map) 
+
+    return res
+
+def cmd_copy(args, options):
+    if len(args) < 3:
+        print "%s miss parameters" % args[0]
+        return
+    pather_source = split_path(args[1])
+    object_source = ''
+    if len(pather_source) == 1 or (len(pather_source) == 2 and pather_source[1] == ''):
+        print "%s : localfile: %s NOT exist, please check" % (args[0], args[1])
+        sys.exit(1)
+    else: #user specified objectname oss://bucket/[path]/object
+        object_source = '/'.join(pather_source[1:])
+    object_source = smart_code(object_source)
+    bucket_source = pather_source[0]
+
+    pather = split_path(args[2])
+    object = ''
+    if len(pather) == 1 or (len(pather) == 2 and pather[1] == ''): # e.g. upload to oss://bucket/
+        object = os.path.basename(localfile)
+    elif pather[len(pather) -1] == '': #e.g. uplod to oss://bucket/a/b/
+        object = '/'.join(pather[1:]) + os.path.basename(localfile)
+    else: #user specified objectname oss://bucket/[path]/object
+        object = '/'.join(pather[1:])
+    object = smart_code(object)
+    bucket = pather[0]
+    content_type = ""
+    headers = {}
+    if options.headers:
+        headers = to_http_headers(options.headers)
+    if options.content_type:
+        content_type = options.content_type
+        headers['Content-Type'] = content_type
+
+    res = get_oss().copy_object(bucket_source, object_source, bucket, object, headers)
+
+    if res.status == 200:
+        print "Object URL is: http://%s/%s/%s" % (host, bucket, object)
+        print "Object abstract path is: oss://%s/%s" % (bucket, object)
+        header_map = convert_header2map(res.getheaders())
+        print "ETag is %s " % safe_get_element("etag", header_map) 
+
+    return res
+
+def cmd_get(args, options):
+    if len(args) < 3:
+        print "%s miss parameters" % args[0]
+        return
+    pather = split_object_path(args[0], args[1])
+    try:
+        bucket = pather[0] 
+        object = '/'.join(pather[1:])
+        object = smart_code(object)
+        localfile = args[2]
+        localfile = smart_code(localfile)
+        res = get_oss().get_object_to_file(bucket, object, localfile)
+        if res.status == 200:
+            print "The object %s is downloaded to %s, please check." % (object, localfile)
+        return res
+    except Exception, e:
+        print e.message
+
+def cmd_multi_get(args, options):
+    if len(args) < 3:
+        print "%s miss parameters" % args[0]
+        return
+    pather = split_object_path(args[0], args[1])
+    try:
+        bucket = pather[0] 
+        object = '/'.join(pather[1:])
+        object = smart_code(object)
+        localfile = args[2]
+        localfile = smart_code(localfile)
+        res = get_oss().head_object(bucket, object)
+
+        length = 0
+        thread_num = 5
+        if options.thread_num:
+            thread_num = options.thread_num
+
+        etag = ""
+        if 200 == res.status:
+            length = (int)(res.getheader('content-length'))
+            etag = res.getheader('etag')
+            etag = etag.replace('"', '')
+        else:
+            print "can not get the length of object:", object
+            return
+        if len(etag) == 0:
+            etag = localfile
+
+        ranges = []
+        ranges.append(0)
+        size = length // thread_num 
+        for i in range(thread_num - 1):
+            ranges.append((i + 1) * size)
+        ranges.append(length)
+
+        files = []
+        threadpool = []
+        for i in range(len(ranges) - 1):
+            exec("file_%s = open(localfile, 'wb+')" % i)
+            oss = get_oss()
+            exec("current = MultiGetWorker(oss, bucket, object, file_%s, ranges[i], ranges[i + 1] - 1)" % i)
+            threadpool.append(current)
+            current.start()
+
+        for item in threadpool:
+            item.join()
+
+        print "The object %s is downloaded to %s, please check." % (object, localfile)
+
+    except Exception, e:
+        print e.message
+
+def cmd_cat(args, options):
+    if len(args) < 2:
+        print "%s miss parameters" % args[0]
+        return
+    pather = split_object_path(args[0], args[1])
+    bucket = pather[0] 
+    object = '/'.join(pather[1:])
+    object = smart_code(object)
+    res = get_oss().get_object(bucket, object)
+    if res.status == 200:
+        data = ""
+        while True:
+            data = res.read(10240)
+            if len(data) != 0:
+                print data
+            else:
+                break
+    return res
+
+def cmd_meta(args, options):
+    if len(args) < 2:
+        print "%s miss parameters" % args[0]
+        return
+    pather = split_object_path(args[0], args[1])
+    bucket = pather[0] 
+    object = '/'.join(pather[1:])
+    object = smart_code(object)
+    
+    res = get_oss().head_object(bucket, object)
+    if res.status == 200:
+        header_map = convert_header2map(res.getheaders())
+        width = 16
+        print "%s: %s" % ("objectname".ljust(width), object)
+        for key, value in header_map.items():
+            print "%s: %s" % (key.ljust(width), value)
+
+    return res
+
+def cmd_delete(args, options):
+    if len(args) < 2:
+        print "%s miss parameters" % args[0]
+        return
+    pather = split_object_path(args[0], args[1])
+    bucket = pather[0] 
+    object = '/'.join(pather[1:])
+    object = smart_code(object)
+    return get_oss().delete_object(bucket, object)
+
+def cmd_sign_url(args, options):
+    if len(args) < 2:
+        print "%s miss parameters" % args[0]
+        return
+    pather = split_path(args[1])
+    timeout = options.timeout or 600
+    print "timeout is %s seconds." % timeout
+
+    pather = split_object_path(args[0], args[1])
+    bucket = pather[0] 
+    object = '/'.join(pather[1:])
+    object = smart_code(object)
+    method = 'GET'
+    print get_oss().sign_url(method, bucket, object, int(timeout))
+
+def cmd_configure(args, options):
+    if options.accessid is None or options.accesskey is None:
+        print "%s miss parameters, use --id=[accessid] --key=[accesskey] to specify id/key pair" % args[0]
+        sys.exit(1) 
+    config = ConfigParser.RawConfigParser()
+    config.add_section(CONFIGSECTION)
+    if options.host is not None:
+        config.set(CONFIGSECTION, 'host', options.host)
+    config.set(CONFIGSECTION, 'accessid', options.accessid)
+    config.set(CONFIGSECTION, 'accesskey', options.accesskey)
+    cfgfile = open(CONFIGFILE, 'w+')
+    config.write(cfgfile)
+    print "Your configuration is saved into %s ." % CONFIGFILE
+    cfgfile.close()
+
+def cmd_help(args, options):
+    print help
+
+def get_oss():
+    oss = OssAPI(host, accessID, accessKEY)
+    oss.show_bar = True
+    return oss
+
+def setup_crenditials():
+    config = ConfigParser.ConfigParser()
+    try:
+        config.read(CONFIGFILE)
+        global host
+        global accessID
+        global accessKEY
+        try:
+            host = config.get(CONFIGSECTION, 'host')
+        except Exception, e:
+            host = "storage.aliyun.com" 
+        accessID = config.get(CONFIGSECTION, 'accessid')
+        accessKEY = config.get(CONFIGSECTION, 'accesskey')
+        if options.accessid is not None:
+            accessID = options.accessid
+        if options.accesskey is not None:
+            accessKEY = options.accesskey
+        if options.host is not None:
+            host = options.host
+    except Exception, e:
+        if options.accessid is not None:
+            accessID = options.accessid
+        if options.accesskey is not None:
+            accessKEY = options.accesskey
+        if options.host is not None:
+            host = options.host
+
+        if len(accessID) == 0 or len(accessKEY) == 0:
+            print "can't get accessid/accesskey, setup use : config --id=accessid --key=accesskey"
+            sys.exit(1)
+
+def setup_cmdlist():
+    cmdlists['getallbucket'] = cmd_getallbucket
+    cmdlists['gs'] = cmd_getallbucket
+    cmdlists['createbucket'] = cmd_createbucket
+    cmdlists['cb'] = cmd_createbucket
+    cmdlists['mb'] = cmd_createbucket
+    cmdlists['pb'] = cmd_createbucket
+    cmdlists['deletebucket'] = cmd_deletebucket
+    cmdlists['deletewholebucket'] = cmd_deletewholebucket
+    cmdlists['deletebyfile'] = cmd_deletebyfile
+    cmdlists['db'] = cmd_deletebucket
+
+    cmdlists['getacl'] = cmd_getacl
+    cmdlists['setacl'] = cmd_setacl
+
+    cmdlists['ls'] = cmd_listing
+    cmdlists['list'] = cmd_listing
+    cmdlists['init'] = cmd_init_upload
+    cmdlists['uploadpartfromstring'] = cmd_upload_par_from_string
+    cmdlists['upfs'] = cmd_upload_par_from_string
+    cmdlists['listpart'] = cmd_listpart
+    cmdlists['listparts'] = cmd_listparts
+    cmdlists['listallobject'] = cmd_listallobject
+    cmdlists['downloadallobject'] = cmd_downloadallobject
+    cmdlists['deleteallobject'] = cmd_deleteallobject
+    cmdlists['put'] = cmd_put
+    cmdlists['copy'] = cmd_copy
+    cmdlists['upload'] = cmd_upload
+    cmdlists['multiupload'] = cmd_multi_upload
+    cmdlists['multi_upload'] = cmd_multi_upload
+    cmdlists['mp'] = cmd_multi_upload
+    cmdlists['get'] = cmd_get
+    cmdlists['multiget'] = cmd_multi_get
+    cmdlists['multi_get'] = cmd_multi_get
+    cmdlists['cat'] = cmd_cat
+    cmdlists['meta'] = cmd_meta
+    cmdlists['rm'] = cmd_delete
+    cmdlists['delete'] = cmd_delete
+    cmdlists['del'] = cmd_delete
+
+    cmdlists['signurl'] = cmd_sign_url
+    cmdlists['config'] = cmd_configure
+    cmdlists['help'] = cmd_help
+    cmdlists['sign'] = cmd_sign_url
+    #cmdlists['sync'] = cmd_sync
+
+if __name__ == '__main__':
+    parser = OptionParser()
+    parser.add_option("-H", "--host", dest="host", help="specify ")
+    parser.add_option("-i", "--id", dest="accessid", help="specify access id")
+    parser.add_option("-k", "--key", dest="accesskey", help="specify access key")
+    parser.add_option("-t", "--timeout", dest="timeout", help="timeout for sign url")
+    parser.add_option("-a", "--acl", dest="acl", help="when createbucket/setacl use this option to specify acl")
+    parser.add_option("", "--upload_id", dest="upload_id", help="get parts to specify upload_id")
+    parser.add_option("", "--part_number", dest="part_number", help="get parts to specify upload_id")
+    parser.add_option("", "--data", dest="data", help="get parts to specify upload_id")
+    parser.add_option("--headers", dest="headers", help="HTTP headers for put object, input format SHOULE like --headers=\"key1:value1,key2:value2\"")
+    parser.add_option("-c", "--content-type", dest="content_type",
+                  help="content type for the file, will return in GET")
+    parser.add_option("", "--thread_num", dest="thread_num", help="object group upload thread num")
+    parser.add_option("", "--max_part_num", dest="max_part_num", help="object group max part num")
+
+    setup_cmdlist()
+    #when not specify a option, the value is None
+    (options, args) = parser.parse_args()
+    if len(args) < 1:
+        print help 
+        sys.exit(1) 
+
+    if args[0] != 'config':
+        setup_crenditials()
+    else:
+        cmdlists['config'](args, options)
+        sys.exit(1)
+
+    if args[0] not in cmdlists.keys():
+        print "unsupported command : %s " % args[0]
+        print "use --help for more information"
+        sys.exit(1) 
+
+    cmd = args[0]
+    begin = time.time()
+    res = cmdlists[cmd](args, options)
+    print_result(cmd, res)
+    end = time.time()
+    sys.stderr.write("%.3f(s) elapsed\n" % (end - begin))
+
