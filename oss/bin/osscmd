@@ -808,7 +808,7 @@ def setup_crenditials():
         try:
             host = config.get(CONFIGSECTION, 'host')
         except Exception, e:
-            host = "storage.aliyun.com" 
+            host = "oss.aliyuncs.com" 
         accessID = config.get(CONFIGSECTION, 'accessid')
         accessKEY = config.get(CONFIGSECTION, 'accesskey')
         if options.accessid is not None:
