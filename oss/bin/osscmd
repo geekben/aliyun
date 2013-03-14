@@ -50,7 +50,7 @@ AclList = ['private', 'public-read', 'public-read-write']
 OSSPrefix = 'oss://'
 CONFIGFILE = os.path.expanduser('~') + '/.osscredentials'
 CONFIGSECTION = 'OSSCredentials'
-host = 'oss.aliyuncs.com'
+host = 'oss-internal.aliyuncs.com'
 accessID = ""
 accessKEY = ""
 
