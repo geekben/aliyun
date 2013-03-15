@@ -504,6 +504,7 @@ def cmd_put(args, options):
     if options.headers:
         headers = to_http_headers(options.headers)
 
+
     res = get_oss().put_object_from_file(bucket, object, localfile, content_type, headers)
 
     if res.status == 200:
