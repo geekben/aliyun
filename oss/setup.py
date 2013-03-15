@@ -19,8 +19,8 @@ setup(
       description="AliYun OSS module",
       author="AliYun OSS",
       url="http://www.aliyun.com",
-      license="LGPL",
+      license="GPL",
       packages= find_packages(),
-      scripts = ["bin/osscmd"],
+      scripts = ["bin/osscmd", "bin/ossput", "bin/ossget"],
       )
 
