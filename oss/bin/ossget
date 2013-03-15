@@ -1,0 +1,231 @@
+#!/usr/bin/env python26
+#coding=utf-8
+from oss.oss_api import *
+from oss.oss_util import *
+from oss.oss_xml_handler import *
+import optparse
+import sys
+import string
+import ConfigParser
+import os, sys, re, time
+from optparse import OptionParser
+import datetime
+import commands
+
+#DEBUG = True
+DEBUG = False
+
+SOURCE = "/mnt/apachelog/logs/sstlog"
+
+help = \
+'''ossput:
+    get oss://bucket/object localfile
+options:
+    --help, print help message'''
+
+cmdlists = {}
+AclList = ['private', 'public-read', 'public-read-write']
+OSSPrefix = 'oss://'
+CONFIGFILE = os.path.expanduser('~') + '/.osscredentials'
+CONFIGSECTION = 'OSSCredentials'
+host = 'oss-internal.aliyuncs.com'
+#host = 'oss.aliyuncs.com'
+accessID = ""
+accessKEY = ""
+
+def formatDateTime(osstimestamp):
+    date = re.compile("(\.\d*)?Z").sub(".000Z", osstimestamp)
+    ts = time.strptime(date, "%Y-%m-%dT%H:%M:%S.000Z")
+    return time.strftime("%Y-%m-%d %H:%M", ts)
+
+def formatSize(size):
+    size = int(size)
+    coeffs = ['K', 'M', 'G', 'T']
+    coeff = ""
+    while size > 2048:
+        size /= 1024
+        coeff = coeffs.pop(0)
+    return str(size) + coeff + "B"
+
+def split_path(path):
+    if not path.lower().startswith(OSSPrefix):
+        print "%s parameter %s invalid, " \
+              "must be start with %s" % \
+              (args[0], args[1], OSSPrefix)
+        sys.exit(1)
+    pather = path[len(OSSPrefix):].split('/')
+    return pather
+
+
+def print_result(cmd, res):
+    try:
+        if res.status / 100 == 2:
+            #print cmd, "OK"
+            pass
+        else:
+            print "Error Headers:\n", res.getheaders()
+            print "Error Body:\n", res.read()
+            print "Error Status:\n", res.status
+            print cmd, "Failed!"
+    except AttributeError:
+        pass
+
+'split an object path'
+def split_object_path(command, path):
+    pather = split_path(path)
+    if len(pather) <= 1:
+        print "%s parameters invalid, must be a object format" % command
+        sys.exit(1)
+    return pather
+
+def to_http_headers(string):
+    map = {}
+    for i in string.split(','):
+        key_value_list = i.strip().split(':')
+        if len(key_value_list) == 2:
+           map[key_value_list[0]] = key_value_list[1] 
+    return map
+        
+def cmd_delete(args):
+    pather = split_path(args)
+    bucket = pather[0]
+    object = '/'.join(pather[1:])
+    object = smart_code(object)
+    if DEBUG: 
+        print bucket
+        print object
+    return get_oss().delete_object(bucket, object)
+
+def cmd_help(args, options):
+    print help
+
+def cmd_get(args, options):
+    pather = split_path(args[0])
+    try:
+        bucket = pather[0]
+        object = '/'.join(pather[1:])
+        object = smart_code(object)
+        localfile = args[1]
+        localfile = smart_code(localfile)
+
+        localdir = os.path.dirname(localfile)
+        if not os.path.exists(localdir):
+            os.makedirs(localdir)
+
+        res = get_oss().get_object_to_file(bucket, object, localfile)
+        if res.status == 200:
+            if DEBUG: print "The object %s is downloaded to %s, please check." % (object, localfile)
+            uncompress_log(localfile)
+        return res
+    except Exception, e:
+        print e.message
+
+def get_oss():
+    oss = OssAPI(host, accessID, accessKEY)
+    oss.show_bar = True
+    return oss
+
+def setup_crenditials():
+    config = ConfigParser.ConfigParser()
+    try:
+        config.read(CONFIGFILE)
+        global host
+        global accessID
+        global accessKEY
+        try:
+            host = config.get(CONFIGSECTION, 'host')
+        except Exception, e:
+            host = "oss.aliyuncs.com" 
+        accessID = config.get(CONFIGSECTION, 'accessid')
+        accessKEY = config.get(CONFIGSECTION, 'accesskey')
+        if options.accessid is not None:
+            accessID = options.accessid
+        if options.accesskey is not None:
+            accessKEY = options.accesskey
+        if options.host is not None:
+            host = options.host
+    except Exception, e:
+        if options.accessid is not None:
+            accessID = options.accessid
+        if options.accesskey is not None:
+            accessKEY = options.accesskey
+        if options.host is not None:
+            host = options.host
+
+        if len(accessID) == 0 or len(accessKEY) == 0:
+            print "can't get accessid/accesskey, setup use : config --id=accessid --key=accesskey"
+            sys.exit(1)
+
+def setup_cmdlist():
+    cmdlists['get'] = cmd_get
+    cmdlists['help'] = cmd_help
+
+def uncompress_log(tarball):
+    '''
+    uncompress raw log
+    '''
+    rawlog = os.path.splitext(tarball)[0]
+    if os.path.exists(rawlog):
+        return rawlog
+    if not os.path.exists(tarball):
+        sys.exit(1)
+    status = commands.getstatusoutput('gunzip -f  %s' % tarball)
+    if not status[0]  == 0:
+        print "Error! When compress file %." % rawlog
+        sys.exit(1)
+    return rawlog
+
+def hour(now, number=1):
+    '''
+    will output the last number file name
+    '''
+    args = []
+    lasthour = now - datetime.timedelta(hours = 1)
+    YYYYMMDDHH = lasthour.strftime('%Y%m%d%H')
+    YYYYMMDD = lasthour.strftime('%Y%m%d')
+    YYYY = lasthour.strftime('%Y')
+    MM = lasthour.strftime('%m')
+    DD = lasthour.strftime('%d')
+    lasthour_log = os.path.join(SOURCE,YYYYMMDD, 'ssttrackerlogs.'+YYYYMMDDHH+'.log')
+    compressed = lasthour_log+'.gz'
+    logname = os.path.basename(compressed)
+    args.append(os.path.join('oss://zhuamobsst', YYYY, MM, DD, logname))
+    args.append(compressed)
+    if DEBUG: 
+        print "INPUT :"
+        print args
+        print "End"
+    return args
+
+if __name__ == '__main__':
+    parser = OptionParser()
+    parser.add_option("-H", "--host", dest="host", help="specify ")
+    parser.add_option("-i", "--id", dest="accessid", help="specify access id")
+    parser.add_option("-k", "--key", dest="accesskey", help="specify access key")
+    parser.add_option("", "--part_number", dest="part_number", help="get parts to specify upload_id")
+    parser.add_option("", "--data", dest="data", help="get parts to specify upload_id")
+    parser.add_option("--headers", dest="headers", help="HTTP headers for put object, input format SHOULE like --headers=\"key1:value1,key2:value2\"")
+    parser.add_option("-c", "--content-type", dest="content_type",
+                  help="content type for the file, will return in GET")
+
+    setup_cmdlist()
+    #when not specify a option, the value is None
+    (options, args) = parser.parse_args()
+    if len(args) < 1:
+        print help 
+        sys.exit(1) 
+
+    if args[0] == 'config':
+        cmdlists['config'](args, options)
+
+    if args[0] == 'hourly':
+        now = datetime.datetime.now()
+        args = hour(now, 1)
+
+    setup_crenditials()
+    begin = time.time()
+    res = cmdlists['get'](args, options)
+    print_result('get', res)
+    end = time.time()
+    sys.stderr.write("%.3f(s) elapsed\n" % (end - begin))
+
