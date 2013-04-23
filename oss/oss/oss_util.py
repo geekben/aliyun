@@ -22,6 +22,21 @@ if "AWS" == PROVIDER:
 
 l = threading.Lock()
 
+########## for BaseException #########
+class MyException(Exception):
+    '''
+    Fixed for the following messages:
+    DeprecationWarning: BaseException.message has been deprecated as of Python 2.6
+    self.message = message
+    '''
+    def _get_message(self):
+        return self._message
+    def _set_message(self, message):
+        self._message = message
+
+    message = property(_get_message, _set_message)
+
+
 ########## function for Authorization ##########
 def _format_header(headers = {}):
     '''

@@ -106,10 +106,14 @@ def cmd_get(args, options):
         object = '/'.join(pather[1:])
         object = smart_code(object)
         localfile = args[1]
+
+        # added toleration for the localfile is .
+        if localfile == '.':
+            localfile = pather[-1]
         localfile = smart_code(localfile)
 
         localdir = os.path.dirname(localfile)
-        if not os.path.exists(localdir):
+        if localdir and not os.path.exists(localdir):
             os.makedirs(localdir)
 
         res = get_oss().get_object_to_file(bucket, object, localfile)
@@ -118,7 +122,8 @@ def cmd_get(args, options):
             uncompress_log(localfile)
         return res
     except Exception, e:
-        print e.message
+        #print e.message
+        print e
 
 def get_oss():
     oss = OssAPI(host, accessID, accessKEY)
