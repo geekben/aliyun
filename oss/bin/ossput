@@ -109,15 +109,18 @@ def cmd_put(args, options):
         sys.exit(1)
     pather = split_path(args[1])
     object = ''
-    filelock = os.path.basename(localfile)+'.tmp'
+    #filelock = os.path.basename(localfile)+'.tmp'
+    filelock = os.path.basename(localfile)
     if len(pather) == 1 or (len(pather) == 2 and pather[1] == ''): # e.g. upload to oss://bucket/
         #object = os.path.basename(localfile)
         object = filelock
     elif pather[len(pather) -1] == '': #e.g. uplod to oss://bucket/a/b/
         #object = '/'.join(pather[1:]) + os.path.basename(localfile)
-        object = '/'.join(pather[1:]) + filelock
+        #object = '/'.join(pather[1:]) + filelock
+        object = '/'.join(pather[1:])
     else: #user specified objectname oss://bucket/[path]/object
-        object = '/'.join(pather[1:]) + '.tmp' 
+        #object = '/'.join(pather[1:]) + '.tmp' 
+        object = '/'.join(pather[1:])
     object = smart_code(object)
     bucket = pather[0]
     content_type = "application/octet-stream"
@@ -139,9 +142,9 @@ def cmd_put(args, options):
             print "recovery to the original name"
         pather_source = "oss://%s/%s" % (bucket, object)
         pather_destin = "oss://%s/%s" % (bucket, os.path.splitext(object)[0])
-        cmd_copy([pather_source, pather_destin], options)
+        #cmd_copy([pather_source, pather_destin], options)
         if DEBUG: print "delete the orignial %s" % pather_source
-        cmd_delete(pather_source)
+        #cmd_delete(pather_source)
 
     return res
 
