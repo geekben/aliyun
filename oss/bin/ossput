@@ -11,6 +11,7 @@ import os, sys, re, time
 from optparse import OptionParser
 import datetime
 import commands
+import socket
 
 #DEBUG = True
 DEBUG = False
@@ -319,6 +320,8 @@ if __name__ == '__main__':
     parser.add_option("--headers", dest="headers", help="HTTP headers for put object, input format SHOULE like --headers=\"key1:value1,key2:value2\"")
     parser.add_option("-c", "--content-type", dest="content_type",
                   help="content type for the file, will return in GET")
+
+    socket.setdefaulttimeout(500)
 
     setup_cmdlist()
     #when not specify a option, the value is None
