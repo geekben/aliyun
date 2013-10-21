@@ -12,9 +12,10 @@ from optparse import OptionParser
 import datetime
 import commands
 import socket
+import subprocess
 
-#DEBUG = True
-DEBUG = False
+DEBUG = True
+#DEBUG = False
 
 SOURCE = "/mnt/apachelog/logs/sstlog"
 
@@ -34,6 +35,14 @@ host = 'oss-internal.aliyuncs.com'
 #host = 'oss.aliyuncs.com'
 accessID = ""
 accessKEY = ""
+
+def getip(dev='eth1'):
+    ip = ''
+    p=subprocess.Popen("/sbin/ifconfig %s | sed '/inet\ /!d;s/.*r://g;s/\ .*//g'" %dev,shell=True,stdout=subprocess.PIPE).stdout
+    ip = p.read().strip()
+    if not ip:
+        ip = '127.0.0.1'
+    return ip
 
 def formatDateTime(osstimestamp):
     date = re.compile("(\.\d*)?Z").sub(".000Z", osstimestamp)
@@ -130,8 +139,11 @@ def cmd_put(args, options):
     if options.headers:
         headers = to_http_headers(options.headers)
     print headers
-
-    res = get_oss().put_object_from_file(bucket, object, localfile, content_type, headers)
+    if DEBUG:
+        print "bucket: %s\nobject: %s\nlocalfile: %s\ncontent_type: %s\nheaders: %s\n" %(bucket, object, localfile, content_type, headers)
+        return
+    else:
+        res = get_oss().put_object_from_file(bucket, object, localfile, content_type, headers)
 
     if res.status == 200:
         header_map = convert_header2map(res.getheaders())
@@ -304,7 +316,7 @@ def hour(now, number=1):
         sys.exit(1)
     logname = os.path.basename(compressed)
     args.append(compressed)
-    args.append(os.path.join('oss://zhuamobsst', YYYY, MM, DD, logname))
+    args.append(os.path.join('oss://zhuamobsst', YYYY, MM, DD, getip(), logname))
     if DEBUG: 
         print "INPUT :"
         print args
