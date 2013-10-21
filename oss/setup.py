@@ -15,7 +15,7 @@ if sys.version_info <= (2, 4):
 from setuptools import setup, find_packages
 setup(
       name="oss",
-      version="20121010",
+      version="20131021",
       description="AliYun OSS module",
       author="AliYun OSS",
       url="http://www.aliyun.com",
